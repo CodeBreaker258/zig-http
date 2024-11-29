@@ -7,6 +7,7 @@ it will include understanding
  - general language practices,
  - and whatever else comes w/ it :D
 
+utilizing xevlibrary for the http server: https://github.com/dylanblokhuis/xev-http
 keep learning 
 
 

@@ -1,0 +1,11 @@
+.{
+    .paths = ["."],
+    .name = "zig-http",
+    .version = "0.13.0",
+    .dependencies = .{
+        .xev = .{
+            .url = "https://github.com/dylanblokhuis/xev-http/archive/main.tar.gz",
+            .hash = "sha2-256:d5558cd419c8d46bdc958064cb97f963d1ea793866414c025906ec15033512ed",
+        },
+    },
+}
