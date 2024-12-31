@@ -1,7 +1,6 @@
 const std = @import("std");
-const xev = @import("xev");
 
-//formely httpServer.zig file in previous commit
+// formerly httpServer.zig file in previous commit
 const clients = @import("client.zig");
 const Client = clients.Client;
 const CompletionPool = clients.CompletionPool;
@@ -13,28 +12,19 @@ const net = std.net;
 const Allocator = std.mem.Allocator;
 
 pub fn main() !void {
-    var thread_pool = xev.ThreadPool.init(.{});
-    defer thread_pool.deinit();
-    defer thread_pool.shutdown();
-
-    var loop = try xev.Loop.init(.{
-        .entries = 4096,
-        .thread_pool = &thread_pool,
-    });
-    defer loop.deinit();
-
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+    // Fix for Zig 0.13.0: Remove '.allocator' and use '&gpa' directly
+    const alloc = &gpa;
 
-    const port = 3000;
+    const port = 8080;
     const addr = try net.Address.parseIp4("0.0.0.0", port);
-    var socket = try xev.TCP.init(addr);
 
     std.log.info("Listening on port {}", .{port});
 
-    try socket.bind(addr);
-    try socket.listen(std.os.linux.SOMAXCONN);
+    // Create the TCP socket
+    const listener = try net.StreamServer.initTcp4(alloc, addr);
+    defer listener.deinit();
 
     var completion_pool = CompletionPool.init(alloc);
     defer completion_pool.deinit();
@@ -42,14 +32,20 @@ pub fn main() !void {
     var client_pool = ClientPool.init(alloc);
     defer client_pool.deinit();
 
-    const c = try completion_pool.create();
     var server = Server{
-        .loop = &loop,
         .gpa = alloc,
         .completion_pool = &completion_pool,
         .client_pool = &client_pool,
     };
 
-    socket.accept(&loop, c, Server, &server, Server.acceptCallback);
-    try loop.run(.until_done);
+    while (true) {
+        const conn = try listener.accept();
+        async handleConnection(&server, conn) catch |err| {
+            std.log.err("Failed to handle connection: {}", .{err});
+        };
+    }
+}
+
+pub fn handleConnection(server: *Server, conn: std.net.Stream) !void {
+    try server.acceptConnection(conn);
 }

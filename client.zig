@@ -1,117 +1,53 @@
 const std = @import("std");
-const xev = @import("xev");
+const http = @import("http.zig");
 
-pub const CompletionPool = std.heap.MemoryPoolExtra(xev.Completion, .{});
-pub const ClientPool = std.heap.MemoryPoolExtra(Client, .{});
-
-//Defined Client and necessary functions to relay info and shut down connection to server
 pub const Client = struct {
     id: u32,
-    socket: xev.TCP,
-    loop: *xev.Loop,
-    arena: std.heap.ArenaAllocator,
-    client_pool: *ClientPool,
-    completion_pool: *CompletionPool,
-    read_buf: [4096]u8 = undefined,
+    socket: std.net.Stream,
+    read_buf: [4096]u8,
 
-    const Self = @This();
-
-    pub fn work(self: *Self) void {
-        const c_read = self.completion_pool.create() catch unreachable;
-        self.socket.read(self.loop, c_read, .{ .slice = &self.read_buf }, Client, self, Client.readCallback);
-    }
-
-    pub fn readCallback(
-        self_: ?*Client,
-        l: *xev.Loop,
-        c: *xev.Completion,
-        s: xev.TCP,
-        buf: xev.ReadBuffer,
-        r: xev.TCP.ReadError!usize,
-    ) xev.CallbackAction {
-        const self = self_.?;
-        const n = r catch |err| {
-            std.log.err("read error {any}", .{err});
-            s.shutdown(l, c, Client, self, shutdownCallback);
-            return .disarm;
+    pub fn init(id: u32, socket: std.net.Stream) Client {
+        return Client{
+            .id = id,
+            .socket = socket,
+            .read_buf = undefined,
         };
-        const data = buf.slice[0..n];
-
-        std.log.info("{s}", .{data});
-
-        const httpOk =
-            \\HTTP/1.1 200 OK
-            \\Content-Type: text/plain
-            \\Server: xev-http
-            \\Content-Length: {d}
-            \\Connection: close
-            \\
-            \\{s}
-        ;
-
-        const content_str =
-            \\Hello, World! {d}
-        ;
-
-        const content = std.fmt.allocPrint(self.arena.allocator(), content_str, .{self.id}) catch unreachable;
-        const res = std.fmt.allocPrint(self.arena.allocator(), httpOk, .{ content.len, content }) catch unreachable;
-
-        self.socket.write(self.loop, c, .{ .slice = res }, Client, self, writeCallback);
-
-        return .disarm;
     }
 
-    fn writeCallback(
-        self_: ?*Client,
-        l: *xev.Loop,
-        c: *xev.Completion,
-        s: xev.TCP,
-        buf: xev.WriteBuffer,
-        r: xev.TCP.WriteError!usize,
-    ) xev.CallbackAction {
-        _ = buf; // autofix
-        _ = r catch unreachable;
-
-        const self = self_.?;
-        s.shutdown(l, c, Client, self, shutdownCallback);
-
-        return .disarm;
+    /// Handles the client connection
+    pub fn handle(self: *Client) !void {
+        while (true) {
+            const response = try http.parseRequest(self.socket);
+            try self.sendResponse(response);
+            // For simplicity, close after one response
+            try self.close();
+            break;
+        }
     }
 
-    fn shutdownCallback(
-        self_: ?*Client,
-        l: *xev.Loop,
-        c: *xev.Completion,
-        s: xev.TCP,
-        r: xev.TCP.ShutdownError!void,
-    ) xev.CallbackAction {
-        _ = r catch {};
+    /// Sends the HTTP response to the client
+    fn sendResponse(self: *Client, resp: http.Response) !void {
+        var writer = self.socket.writer();
+        defer writer.deinit();
 
-        const self = self_.?;
-        s.close(l, c, Client, self, closeCallback);
-        return .disarm;
+        // Write status line
+        try writer.print("HTTP/1.1 {d} {s}\r\n", .{ resp.status_code, resp.reason }) catch {};
+
+        // Write headers
+        var iter = resp.headers.iterator();
+        while (iter.next()) |entry| {
+            try writer.print("{s}: {s}\r\n", .{ entry.key, entry.value }) catch {};
+        }
+
+        // End of headers
+        try writer.print("\r\n", .{}) catch {};
+
+        // Write body
+        try writer.writeAll(resp.body) catch {};
     }
 
-    fn closeCallback(
-        self_: ?*Client,
-        l: *xev.Loop,
-        c: *xev.Completion,
-        socket: xev.TCP,
-        r: xev.TCP.CloseError!void,
-    ) xev.CallbackAction {
-        _ = l;
-        _ = r catch unreachable;
-        _ = socket;
-
-        var self = self_.?;
-        self.arena.deinit();
-        self.completion_pool.destroy(c);
-        self.client_pool.destroy(self);
-        return .disarm;
-    }
-
-    pub fn destroy(self: *Self) void {
-        self.arena.deinit();
-        self.client_pool.destroy(self);
+    /// Gracefully close the connection
+    pub fn close(self: *Client) !void {
+        try self.socket.close();
     }
 };
